@@ -50,31 +50,52 @@ def scale_image(
     return StreamingResponse(BytesIO(response.content), media_type="image/jpeg")
 
 
-@router.get("/crop-image/")
+@router.get("/crop-image")
 def crop_image(
         image_url: str = Query(..., description="URL ảnh gốc"),
-        crop_ratio: float = Query(1.0, gt=0.1, description="Tỷ lệ width/height (ví dụ 1.33 cho 4:3)"),
-        output_width: int = Query(800, gt=0, description="Chiều rộng đầu ra (px)")
+        output_width: int = Query(..., gt=0, description="Chiều rộng đầu ra (px)"),
+        output_height: int = Query(..., gt=0, description="Chiều cao đầu ra (px)"),
+        auto_scale: bool = Query(True, description="Tự động scale theo chiều lớn hơn để giữ tỷ lệ"),
+        output_is_url: bool = Query(True, description="Trả về URL của ảnh đã crop thay vì file ảnh trực tiếp")
 ):
     # Upload ảnh lên Cloudinary
     uploaded = cloudinary.uploader.upload(image_url)
     public_id = uploaded["public_id"]
 
-    # Tính chiều cao dựa trên tỷ lệ crop và chiều rộng yêu cầu
-    output_height = int(output_width / crop_ratio)
+    # Tính tỷ lệ crop
+    crop_ratio = output_width / output_height
+
+    # Nếu auto_scale = True, scale theo chiều lớn hơn
+    if auto_scale:
+        original_width = uploaded.get("width")
+        original_height = uploaded.get("height")
+        original_ratio = original_width / original_height if original_height else crop_ratio
+
+        if original_ratio == crop_ratio:
+            output_width = int(original_width)
+            output_height = int(original_height)
+        elif original_ratio < crop_ratio:
+            output_height = int(original_width / crop_ratio)
+            output_width = int(original_width)
+        else:
+            output_width = int(original_height * crop_ratio)
+            output_height = int(original_height)
 
     # Tạo URL ảnh đã crop bằng AI
     cropped_url = cloudinary.CloudinaryImage(public_id).build_url(
         width=output_width,
         height=output_height,
-        crop="fill",         # fill đảm bảo giữ đúng tỉ lệ
-        gravity="auto",      # Cloudinary AI chọn vùng cắt thông minh
+        crop="fill",
+        gravity="auto",
         format="jpg"
     )
+
+    if output_is_url:
+        return {"image_url": cropped_url}
 
     # Tải ảnh đã xử lý
     response = requests.get(cropped_url)
     if response.status_code != 200:
-        return {"error": "Không thể tải ảnh đã crop từ Cloudinary."}
+        return {"error": f"{response}"}
 
     return StreamingResponse(BytesIO(response.content), media_type="image/jpeg")
